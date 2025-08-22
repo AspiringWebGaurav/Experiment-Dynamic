@@ -1,18 +1,6 @@
 {
   "rules": {
     ".read": "auth != null",
-    ".write": "auth != null",
-    "yjs": {
-      ".read": "auth != null",
-      ".write": "auth != null"
-    },
-    "awareness": {
-      ".read": "auth != null",
-      ".write": "auth != null"
-    },
-    "rt-presence": {
-      ".read": "auth != null",
-      ".write": "auth != null"
-    }
+    ".write": "auth != null"
   }
 }

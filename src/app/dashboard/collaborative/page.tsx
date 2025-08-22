@@ -11,33 +11,39 @@ import {
   Clock, 
   UserPlus,
   Share2,
-  Sparkles
+  Sparkles,
+  Copy,
+  ExternalLink
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import InviteCodeCard from '@/components/collaborative/InviteCodeCard';
-import JoinByCodeForm from '@/components/collaborative/JoinByCodeForm';
-import { rtdb } from '@/lib/firebase';
-import { ref, onValue, query, orderByChild, equalTo } from 'firebase/database';
+import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+import { createInviteCode, getActiveInviteCode, canCreateInvite } from '@/lib/inviteCodes';
 
-interface CollaborativeSession {
+interface CollaborativeNote {
   id: string;
-  noteId: string;
   title: string;
-  createdBy: string;
-  status: 'waiting' | 'active' | 'ended';
+  ownerUid: string;
+  members: string[];
   createdAt: any;
   updatedAt: any;
-  memberCount: number;
+  invite?: {
+    token: string;
+    expiresAt: any;
+    maxMembers: number;
+  };
 }
 
 export default function CollaborativePage() {
   const { user, loading } = useAuth();
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<'host' | 'join'>('host');
-  const [sessions, setSessions] = useState<CollaborativeSession[]>([]);
-  const [loadingSessions, setLoadingSessions] = useState(true);
+  const [notes, setNotes] = useState<CollaborativeNote[]>([]);
+  const [loadingNotes, setLoadingNotes] = useState(true);
+  const [inviteCode, setInviteCode] = useState<string>('');
+  const [showInviteCode, setShowInviteCode] = useState(false);
+  const [creatingNote, setCreatingNote] = useState(false);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -46,50 +52,87 @@ export default function CollaborativePage() {
     }
 
     if (user) {
-      // Listen for user's collaborative sessions
-      const lobbiesRef = ref(rtdb, 'lobbies');
-      const userLobbiesQuery = query(
-        lobbiesRef,
-        orderByChild('createdBy'),
-        equalTo(user.uid)
+      // Listen for user's collaborative notes (where they are a member)
+      const notesQuery = query(
+        collection(db, 'notes'),
+        where('members', 'array-contains', user.uid),
+        orderBy('updatedAt', 'desc')
       );
 
-      const unsubscribe = onValue(userLobbiesQuery, (snapshot) => {
-        const lobbiesData = snapshot.val();
-        const sessionsList: CollaborativeSession[] = [];
-
-        if (lobbiesData) {
-          Object.entries(lobbiesData).forEach(([id, data]: [string, any]) => {
-            sessionsList.push({
-              id,
-              noteId: data.noteId,
-              title: data.title || 'Collaborative Note',
-              createdBy: data.createdBy,
-              status: data.status,
-              createdAt: data.createdAt,
-              updatedAt: data.updatedAt,
-              memberCount: data.memberCount || 1
-            });
-          });
-        }
-
-        setSessions(sessionsList.sort((a, b) => 
-          (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt)
-        ));
-        setLoadingSessions(false);
+      const unsubscribe = onSnapshot(notesQuery, (snapshot) => {
+        const notesData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as CollaborativeNote[];
+        
+        setNotes(notesData);
+        setLoadingNotes(false);
       });
 
       return () => unsubscribe();
     }
   }, [user, loading, router]);
 
-  const createNewSession = () => {
-    // Navigate to the collaborative notes creation page
-    router.push('/notes/collaborative');
+  const createNewCollaborativeNote = async () => {
+    if (!user || creatingNote) return;
+
+    setCreatingNote(true);
+    try {
+      const newNote = {
+        ownerUid: user.uid,
+        title: 'New Collaborative Note',
+        content: '',
+        members: [user.uid],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      const docRef = await addDoc(collection(db, 'notes'), newNote);
+      router.push(`/notes/${docRef.id}`);
+    } catch (error) {
+      console.error('Error creating collaborative note:', error);
+    } finally {
+      setCreatingNote(false);
+    }
   };
 
-  const joinSession = (noteId: string) => {
-    router.push(`/notes/collaborative/${noteId}`);
+  const handleShare = async (noteId: string) => {
+    if (!user) return;
+
+    try {
+      // Check if user can create invite
+      const canCreate = await canCreateInvite(noteId, user.uid);
+      if (!canCreate) {
+        alert('You cannot create an invite for this note (room may be full or you are not the owner)');
+        return;
+      }
+
+      // Check for existing active invite code
+      let code = await getActiveInviteCode(noteId, user.uid);
+      
+      // If no active code, create a new one
+      if (!code) {
+        code = await createInviteCode(noteId, user.uid);
+      }
+      
+      setInviteCode(code);
+      
+      // Copy to clipboard
+      await navigator.clipboard.writeText(code);
+      setShowInviteCode(true);
+      setTimeout(() => setShowInviteCode(false), 5000);
+    } catch (error) {
+      console.error('Error creating invite code:', error);
+      alert('Failed to create invite code. Please try again.');
+    }
+  };
+
+  const handleJoinWithCode = () => {
+    router.push('/join');
+  };
+
+  const openNote = (noteId: string) => {
+    router.push(`/notes/${noteId}`);
   };
 
   if (loading) {
@@ -122,12 +165,16 @@ export default function CollaborativePage() {
               <div className="flex items-center gap-2">
                 <Users className="h-5 w-5 text-blue-600" />
                 <h1 className="text-xl font-semibold">Collaborative Notes</h1>
-                <Badge variant="secondary">Beta</Badge>
+                <Badge variant="secondary">Two-Person</Badge>
               </div>
             </div>
-            <Button onClick={createNewSession} className="gap-2">
+            <Button 
+              onClick={createNewCollaborativeNote} 
+              disabled={creatingNote}
+              className="gap-2"
+            >
               <Plus className="h-4 w-4" />
-              New Session
+              {creatingNote ? 'Creating...' : 'New Collaborative Note'}
             </Button>
           </div>
         </div>
@@ -142,127 +189,141 @@ export default function CollaborativePage() {
         >
           <div className="flex items-center justify-center gap-2 mb-4">
             <Sparkles className="h-6 w-6 text-blue-600" />
-            <h2 className="text-2xl font-bold">Real-time Collaboration</h2>
+            <h2 className="text-2xl font-bold">Two-Person Real-time Collaboration</h2>
           </div>
-          <p className="text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
-            Work together in real-time on shared notes. Create an invite code to host a session, 
-            or join someone else's collaborative note using their code.
+          <p className="text-slate-600 dark:text-slate-400 max-w-2xl mx-auto mb-6">
+            Create collaborative notes that support exactly two people working together in real-time.
+            Share secure invite codes with 24-hour expiration for seamless collaboration.
           </p>
+          
+          {/* Prominent Join with Code Button */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.1 }}
+            className="bg-gradient-to-r from-green-500 to-emerald-500 rounded-xl p-6 mb-8 text-white"
+          >
+            <div className="flex items-center justify-center gap-3 mb-3">
+              <UserPlus className="h-6 w-6" />
+              <h3 className="text-xl font-semibold">Want to Join a Collaborative Note?</h3>
+            </div>
+            <p className="text-green-100 mb-4">
+              Have an invite code from a friend? Enter it below to join their collaborative note instantly!
+            </p>
+            <Button
+              onClick={handleJoinWithCode}
+              size="lg"
+              className="bg-white text-green-600 hover:bg-green-50 font-semibold px-8 py-3 gap-2"
+            >
+              <UserPlus className="h-5 w-5" />
+              Join with Invite Code
+            </Button>
+          </motion.div>
         </motion.div>
 
-        {/* Tab Navigation */}
-        <div className="flex justify-center mb-8">
-          <div className="bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
-            <button
-              onClick={() => setActiveTab('host')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                activeTab === 'host'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Share2 className="h-4 w-4 inline mr-2" />
-              Host Session
-            </button>
-            <button
-              onClick={() => setActiveTab('join')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                activeTab === 'join'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <UserPlus className="h-4 w-4 inline mr-2" />
-              Join Session
-            </button>
-          </div>
-        </div>
+        {/* Invite Code Success Message */}
+        {showInviteCode && inviteCode && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="mb-6 bg-green-50 border border-green-200 rounded-lg p-6 text-center"
+          >
+            <div className="text-green-600 font-medium mb-2">
+              Invite Code Created & Copied!
+            </div>
+            <div className="text-2xl font-mono font-bold text-green-800 tracking-wider mb-2">
+              {inviteCode}
+            </div>
+            <div className="text-sm text-green-600">
+              Share this code with your collaborator. Code expires in 24 hours.
+            </div>
+          </motion.div>
+        )}
 
-        {/* Content */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left Column - Host/Join Forms */}
-          <div>
-            {activeTab === 'host' ? (
-              <motion.div
-                key="host"
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.3 }}
-              >
-                <InviteCodeCard />
-              </motion.div>
-            ) : (
-              <motion.div
-                key="join"
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.3 }}
-              >
-                <JoinByCodeForm />
-              </motion.div>
-            )}
-          </div>
-
-          {/* Right Column - Recent Sessions */}
-          <div>
-            <Card className="bg-white/60 dark:bg-slate-900/50 backdrop-blur">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Clock className="h-5 w-5" />
-                  Recent Sessions
-                </CardTitle>
-                <CardDescription>
-                  Your collaborative notes history
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {loadingSessions ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="animate-spin w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full"></div>
-                  </div>
-                ) : sessions.length === 0 ? (
-                  <div className="text-center py-8">
-                    <Users className="h-12 w-12 text-slate-400 mx-auto mb-4" />
-                    <p className="text-slate-600 dark:text-slate-400 mb-4">
-                      No collaborative sessions yet
-                    </p>
-                    <Button onClick={createNewSession} variant="outline" className="gap-2">
-                      <Plus className="h-4 w-4" />
-                      Start Your First Session
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {sessions.slice(0, 5).map((session) => (
+        {/* Collaborative Notes */}
+        <div className="mb-8">
+          <Card className="bg-white/60 dark:bg-slate-900/50 backdrop-blur">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Clock className="h-5 w-5" />
+                Your Collaborative Notes
+              </CardTitle>
+              <CardDescription>
+                Notes you own or collaborate on with others
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {loadingNotes ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+                </div>
+              ) : notes.length === 0 ? (
+                <div className="text-center py-8">
+                  <Users className="h-12 w-12 text-slate-400 mx-auto mb-4" />
+                  <p className="text-slate-600 dark:text-slate-400 mb-4">
+                    No collaborative notes yet
+                  </p>
+                  <Button onClick={createNewCollaborativeNote} variant="outline" className="gap-2">
+                    <Plus className="h-4 w-4" />
+                    Create Your First Collaborative Note
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notes.map((note) => {
+                    const isOwner = note.ownerUid === user.uid;
+                    const memberCount = note.members?.length || 1;
+                    const hasRoom = memberCount < 2;
+                    
+                    return (
                       <div
-                        key={session.id}
-                        className="flex items-center justify-between p-3 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer"
-                        onClick={() => joinSession(session.noteId)}
+                        key={note.id}
+                        className="flex items-center justify-between p-4 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
                       >
                         <div className="flex-1 min-w-0">
-                          <h4 className="font-medium text-sm truncate">
-                            {session.title}
-                          </h4>
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className="font-medium text-sm truncate">
+                              {note.title || 'Untitled Note'}
+                            </h4>
+                            {isOwner && <Badge variant="outline" className="text-xs">Owner</Badge>}
+                          </div>
                           <p className="text-xs text-slate-600 dark:text-slate-400">
-                            {session.status === 'active' ? 'Active' : 'Ended'} • {session.memberCount} member{session.memberCount !== 1 ? 's' : ''}
+                            {memberCount} of 2 members • {hasRoom ? 'Room available' : 'Full'}
+                            {note.updatedAt && (
+                              <span> • Updated {note.updatedAt.toDate?.()?.toLocaleDateString() || 'recently'}</span>
+                            )}
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
-                          <Badge 
-                            variant={session.status === 'active' ? 'default' : 'secondary'}
-                            className="text-xs"
+                          {isOwner && hasRoom && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleShare(note.id)}
+                              className="gap-1"
+                            >
+                              <Share2 className="h-3 w-3" />
+                              Share
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openNote(note.id)}
+                            className="gap-1"
                           >
-                            {session.status}
-                          </Badge>
-                          <ArrowRight className="h-4 w-4 text-slate-400" />
+                            <ExternalLink className="h-3 w-3" />
+                            Open
+                          </Button>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
         {/* Quick Actions */}
@@ -270,26 +331,27 @@ export default function CollaborativePage() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
-          className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6"
+          className="grid grid-cols-1 md:grid-cols-3 gap-6"
         >
           <Card className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/20 border-blue-200 dark:border-blue-800">
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-3">
                 <div className="p-2 bg-blue-100 dark:bg-blue-900/50 rounded-lg">
-                  <Share2 className="h-5 w-5 text-blue-600" />
+                  <Plus className="h-5 w-5 text-blue-600" />
                 </div>
-                <h3 className="font-semibold">Host a Session</h3>
+                <h3 className="font-semibold">Create Note</h3>
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-                Create an invite code and share it with others to start collaborating.
+                Start a new collaborative note that supports two people working together.
               </p>
               <Button 
                 variant="outline" 
                 size="sm" 
-                onClick={() => setActiveTab('host')}
+                onClick={createNewCollaborativeNote}
+                disabled={creatingNote}
                 className="w-full"
               >
-                Generate Code
+                {creatingNote ? 'Creating...' : 'Create Now'}
               </Button>
             </CardContent>
           </Card>
@@ -298,20 +360,20 @@ export default function CollaborativePage() {
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-3">
                 <div className="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                  <UserPlus className="h-5 w-5 text-green-600" />
+                  <Share2 className="h-5 w-5 text-green-600" />
                 </div>
-                <h3 className="font-semibold">Join a Session</h3>
+                <h3 className="font-semibold">Share & Collaborate</h3>
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-                Enter an invite code to join someone else's collaborative note.
+                Generate secure invite links to share your notes with one collaborator.
               </p>
               <Button 
                 variant="outline" 
                 size="sm" 
-                onClick={() => setActiveTab('join')}
+                onClick={() => router.push('/dashboard/notes')}
                 className="w-full"
               >
-                Enter Code
+                View All Notes
               </Button>
             </CardContent>
           </Card>
@@ -320,23 +382,63 @@ export default function CollaborativePage() {
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-3">
                 <div className="p-2 bg-purple-100 dark:bg-purple-900/50 rounded-lg">
-                  <Plus className="h-5 w-5 text-purple-600" />
+                  <Users className="h-5 w-5 text-purple-600" />
                 </div>
-                <h3 className="font-semibold">New Session</h3>
+                <h3 className="font-semibold">Real-time Sync</h3>
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-                Start a new collaborative note session right away.
+                See live edits, presence indicators, and collaborate seamlessly.
               </p>
               <Button 
                 variant="outline" 
                 size="sm" 
-                onClick={createNewSession}
+                disabled
                 className="w-full"
               >
-                Create Now
+                Always Active
               </Button>
             </CardContent>
           </Card>
+        </motion.div>
+
+        {/* Features Info */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.4 }}
+          className="mt-12 bg-slate-50 dark:bg-slate-900/50 rounded-xl p-6"
+        >
+          <h3 className="text-lg font-semibold mb-4 text-center">How Two-Person Collaboration Works</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+            <div className="text-center">
+              <div className="text-2xl mb-2">🔐</div>
+              <h4 className="font-medium mb-1">Secure Access</h4>
+              <p className="text-slate-600 dark:text-slate-400">
+                Only note owners and invited collaborators can access notes
+              </p>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl mb-2">⚡</div>
+              <h4 className="font-medium mb-1">Real-time Sync</h4>
+              <p className="text-slate-600 dark:text-slate-400">
+                See changes instantly with last-write-wins conflict resolution
+              </p>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl mb-2">👥</div>
+              <h4 className="font-medium mb-1">Presence Indicators</h4>
+              <p className="text-slate-600 dark:text-slate-400">
+                See who's online and collaborating with avatar indicators
+              </p>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl mb-2">⏰</div>
+              <h4 className="font-medium mb-1">24h Invite Links</h4>
+              <p className="text-slate-600 dark:text-slate-400">
+                Share links expire automatically for security
+              </p>
+            </div>
+          </div>
         </motion.div>
       </div>
     </div>

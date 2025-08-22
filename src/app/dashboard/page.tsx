@@ -18,6 +18,7 @@ import {
   CheckSquare,
   Clock,
   Users,
+  UserPlus,
 } from "lucide-react";
 
 // shadcn/ui imports
@@ -200,6 +201,7 @@ export default function DashboardPage() {
   };
   const goTemplates = () => router.push("/dashboard/templates");
   const goCollaborative = () => router.push("/dashboard/collaborative");
+  const goJoinWithCode = () => router.push("/join");
   const viewAllNotes = () => router.push("/dashboard/notes");
   const viewAllMoney = () => router.push("/dashboard/money");
   const viewAllTodos = () => router.push("/dashboard/todos");
@@ -567,13 +569,31 @@ export default function DashboardPage() {
                   description="Work together in real-time"
                   action={{ label: "View all", onClick: goCollaborative }}
                 >
-                  <EmptyState
-                    icon={<Users className="h-5 w-5" />}
-                    title="Start Collaborating"
-                    subtitle="Create invite codes or join others' collaborative notes"
-                    ctaLabel="Open Collaborative"
-                    onCta={goCollaborative}
-                  />
+                  <div className="space-y-3">
+                    <div className="bg-gradient-to-r from-green-500 to-emerald-500 rounded-xl p-4 text-white text-center">
+                      <UserPlus className="h-6 w-6 mx-auto mb-2" />
+                      <h4 className="font-semibold mb-1">Have an Invite Code?</h4>
+                      <p className="text-green-100 text-xs mb-3">Join a collaborative note instantly</p>
+                      <Button
+                        onClick={goJoinWithCode}
+                        size="sm"
+                        className="bg-white text-green-600 hover:bg-green-50 font-medium"
+                      >
+                        Enter Code
+                      </Button>
+                    </div>
+                    <div className="text-center">
+                      <Button
+                        onClick={goCollaborative}
+                        variant="outline"
+                        size="sm"
+                        className="gap-2"
+                      >
+                        <Users className="h-4 w-4" />
+                        Create & Manage
+                      </Button>
+                    </div>
+                  </div>
                 </Section>
               </div>
             </div>
@@ -708,6 +728,28 @@ export default function DashboardPage() {
               gradient="from-orange-500 to-red-500"
               onClick={goCollaborative}
             />
+            <div className="bg-gradient-to-br from-green-500 to-emerald-500 rounded-3xl p-0.5">
+              <div className="h-full w-full rounded-[calc(theme(borderRadius.3xl)-2px)] bg-white/80 dark:bg-slate-950/60 p-5 backdrop-blur">
+                <div className="text-center">
+                  <div className="flex items-center justify-center mb-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-green-100 dark:bg-green-900/60">
+                      <UserPlus className="h-5 w-5 text-green-600" />
+                    </div>
+                  </div>
+                  <h3 className="text-base font-semibold tracking-tight mb-2">Join with Invite Code</h3>
+                  <p className="text-sm text-slate-600 dark:text-slate-300 mb-4">
+                    Have a 6-character code? Join instantly!
+                  </p>
+                  <Button
+                    onClick={goJoinWithCode}
+                    className="bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:from-green-600 hover:to-emerald-600 gap-2"
+                  >
+                    <UserPlus className="h-4 w-4" />
+                    Enter Code
+                  </Button>
+                </div>
+              </div>
+            </div>
           </motion.div>
 
           {/* Search */}
