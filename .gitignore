@@ -59,7 +59,7 @@ jspm_packages/
 # Build directories
 dist/
 build/
-lib/
+
 coverage/
 
 # Env files
