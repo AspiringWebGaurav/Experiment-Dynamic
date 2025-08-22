@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { doc, onSnapshot, updateDoc, serverTimestamp, addDoc, collection } from 'firebase/firestore';
@@ -10,7 +10,8 @@ import { createInviteCode, getActiveInviteCode, canCreateInvite } from '@/lib/in
 import { goOnline, listenToPresence, PresenceData, getUserColor } from '@/lib/presence';
 import { motion } from 'framer-motion';
 import PresenceIndicators from '../../../components/PresenceIndicators';
-import { useEditor, EditorContent } from '@tiptap/react';
+import { EditorContent } from '@tiptap/react';
+import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
@@ -52,42 +53,51 @@ export default function NotePage() {
   const presenceCleanupRef = useRef<(() => void) | null>(null);
   const presenceListenerCleanupRef = useRef<(() => void) | null>(null);
   const offlineQueue = useRef<{ title: string; content: string }[]>([]);
-  const ydoc = useMemo(() => new Y.Doc(), [noteId]);
-  const provider = useMemo(() => new WebrtcProvider(noteId, ydoc), [noteId, ydoc]);
-  const editor = useEditor({
-    extensions: [
-      StarterKit.configure({ history: false }),
-      Collaboration.configure({ document: ydoc, field: 'content' }),
-      CollaborationCursor.configure({ provider: provider.awareness })
-    ]
-  });
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const ydocRef = useRef<Y.Doc | null>(null);
+  const providerRef = useRef<WebrtcProvider | null>(null);
 
   useEffect(() => {
-    if (user) {
-      provider.awareness.setLocalStateField('user', {
+    const ydoc = new Y.Doc();
+    const provider = new WebrtcProvider(noteId, ydoc);
+    ydocRef.current = ydoc;
+    providerRef.current = provider;
+    const editorInstance = new Editor({
+      extensions: [
+        StarterKit.configure({ history: false }),
+        Collaboration.configure({ document: ydoc, field: 'content' }),
+        CollaborationCursor.configure({
+          provider,
+          user: { name: 'Anonymous', color: '#000000' }
+        })
+      ]
+    });
+    setEditor(editorInstance);
+    return () => {
+      editorInstance.destroy();
+      provider.destroy();
+      ydoc.destroy();
+    };
+  }, [noteId]);
+
+  useEffect(() => {
+    if (user && providerRef.current) {
+      providerRef.current.awareness.setLocalStateField('user', {
         name: user.displayName || 'Anonymous',
         color: getUserColor(user.uid)
       });
     }
-  }, [user, provider]);
+  }, [user]);
 
   useEffect(() => {
-    return () => {
-      editor?.destroy();
-      provider.destroy();
-      ydoc.destroy();
-    };
-  }, [editor, provider, ydoc]);
-
-  useEffect(() => {
-    if (note) {
-      const ytext = ydoc.getText('content');
+    if (note && ydocRef.current) {
+      const ytext = ydocRef.current.getText('content');
       ytext.delete(0, ytext.length);
       if (note.content) {
         ytext.insert(0, note.content);
       }
     }
-  }, [note, ydoc]);
+  }, [note, editor]);
 
   const persistNote = async (newTitle: string, newContent: string) => {
     if (!user) return;
@@ -111,7 +121,8 @@ export default function NotePage() {
   };
 
   useEffect(() => {
-    const ytext = ydoc.getText('content');
+    if (!ydocRef.current) return;
+    const ytext = ydocRef.current.getText('content');
     const handler = () => {
       const newContent = ytext.toString();
       persistNote(title, newContent);
@@ -120,7 +131,7 @@ export default function NotePage() {
     return () => {
       ytext.unobserve(handler);
     };
-  }, [title, ydoc]);
+  }, [title, editor]);
 
   useEffect(() => {
     const flushQueue = async () => {
@@ -232,7 +243,9 @@ export default function NotePage() {
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newTitle = e.target.value;
     setTitle(newTitle);
-    const currentContent = ydoc.getText('content').toString();
+    const currentContent = ydocRef.current
+      ?.getText('content')
+      .toString() || '';
     persistNote(newTitle, currentContent);
   };
 
@@ -451,7 +464,7 @@ export default function NotePage() {
           {/* Footer */}
           <div className="border-t border-gray-200 p-3 text-xs text-gray-500 flex justify-between items-center">
             <div>
-              {ydoc.getText('content').toString().length} characters
+              {ydocRef.current?.getText('content').toString().length ?? 0} characters
             </div>
             <div className="flex items-center space-x-4">
               {saving && (
