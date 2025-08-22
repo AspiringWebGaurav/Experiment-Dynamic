@@ -25,7 +25,8 @@ import {
   deleteDoc,
   updateDoc,
   getDoc,
-  serverTimestamp
+  serverTimestamp,
+  enableIndexedDbPersistence
 } from "firebase/firestore";
 import { getDatabase } from "firebase/database";
 import { getFunctions } from "firebase/functions";
@@ -65,6 +66,10 @@ provider.setCustomParameters({
 if (typeof window !== 'undefined') {
   setPersistence(auth, browserLocalPersistence).catch((error) => {
     console.error('Error setting auth persistence:', error);
+  });
+
+  enableIndexedDbPersistence(db).catch((error) => {
+    console.warn('Error enabling offline persistence:', error);
   });
 }
 

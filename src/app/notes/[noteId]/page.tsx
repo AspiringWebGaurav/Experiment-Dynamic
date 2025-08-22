@@ -1,15 +1,21 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { doc, onSnapshot, updateDoc, serverTimestamp, addDoc, collection } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { validateNoteAccess } from '@/lib/share';
 import { createInviteCode, getActiveInviteCode, canCreateInvite } from '@/lib/inviteCodes';
-import { goOnline, listenToPresence, PresenceData } from '@/lib/presence';
+import { goOnline, listenToPresence, PresenceData, getUserColor } from '@/lib/presence';
 import { motion } from 'framer-motion';
 import PresenceIndicators from '../../../components/PresenceIndicators';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Collaboration from '@tiptap/extension-collaboration';
+import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
+import * as Y from 'yjs';
+import { WebrtcProvider } from 'y-webrtc';
 
 interface Note {
   id: string;
@@ -37,17 +43,109 @@ export default function NotePage() {
   const [error, setError] = useState<string>('');
   const [hasAccess, setHasAccess] = useState(false);
   const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
   const [saving, setSaving] = useState(false);
+  const [offlineSaving, setOfflineSaving] = useState(false);
   const [inviteCode, setInviteCode] = useState<string>('');
   const [showInviteCode, setShowInviteCode] = useState(false);
   const [creatingInvite, setCreatingInvite] = useState(false);
   const [presenceData, setPresenceData] = useState<Record<string, PresenceData>>({});
-  
-  const contentRef = useRef<HTMLTextAreaElement>(null);
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const presenceCleanupRef = useRef<(() => void) | null>(null);
   const presenceListenerCleanupRef = useRef<(() => void) | null>(null);
+  const offlineQueue = useRef<{ title: string; content: string }[]>([]);
+  const ydoc = useMemo(() => new Y.Doc(), [noteId]);
+  const provider = useMemo(() => new WebrtcProvider(noteId, ydoc), [noteId, ydoc]);
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({ history: false }),
+      Collaboration.configure({ document: ydoc, field: 'content' }),
+      CollaborationCursor.configure({ provider: provider.awareness })
+    ]
+  });
+
+  useEffect(() => {
+    if (user) {
+      provider.awareness.setLocalStateField('user', {
+        name: user.displayName || 'Anonymous',
+        color: getUserColor(user.uid)
+      });
+    }
+  }, [user, provider]);
+
+  useEffect(() => {
+    return () => {
+      editor?.destroy();
+      provider.destroy();
+      ydoc.destroy();
+    };
+  }, [editor, provider, ydoc]);
+
+  useEffect(() => {
+    if (note) {
+      const ytext = ydoc.getText('content');
+      ytext.delete(0, ytext.length);
+      if (note.content) {
+        ytext.insert(0, note.content);
+      }
+    }
+  }, [note, ydoc]);
+
+  const persistNote = async (newTitle: string, newContent: string) => {
+    if (!user) return;
+    if (navigator.onLine) {
+      setSaving(true);
+      try {
+        await updateDoc(doc(db, 'notes', noteId), {
+          title: newTitle,
+          content: newContent,
+          updatedAt: serverTimestamp()
+        });
+      } catch (error) {
+        console.error('Error saving note:', error);
+      } finally {
+        setSaving(false);
+      }
+    } else {
+      offlineQueue.current = [{ title: newTitle, content: newContent }];
+      setOfflineSaving(true);
+    }
+  };
+
+  useEffect(() => {
+    const ytext = ydoc.getText('content');
+    const handler = () => {
+      const newContent = ytext.toString();
+      persistNote(title, newContent);
+    };
+    ytext.observe(handler);
+    return () => {
+      ytext.unobserve(handler);
+    };
+  }, [title, ydoc]);
+
+  useEffect(() => {
+    const flushQueue = async () => {
+      if (offlineQueue.current.length === 0) return;
+      try {
+        for (const change of offlineQueue.current) {
+          await updateDoc(doc(db, 'notes', noteId), {
+            title: change.title,
+            content: change.content,
+            updatedAt: serverTimestamp()
+          });
+        }
+        offlineQueue.current = [];
+        setOfflineSaving(false);
+        alert('Offline changes synced');
+      } catch (error) {
+        console.error('Error flushing offline changes:', error);
+        alert('Failed to sync offline changes');
+      }
+    };
+    window.addEventListener('online', flushQueue);
+    return () => {
+      window.removeEventListener('online', flushQueue);
+    };
+  }, [noteId]);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -79,7 +177,6 @@ export default function NotePage() {
             const noteWithId = { ...data, id: doc.id };
             setNote(noteWithId);
             setTitle(data.title || '');
-            setContent(data.content || '');
             setNoteLoading(false);
           } else {
             setError('Note not found.');
@@ -132,44 +229,11 @@ export default function NotePage() {
     };
   }, [user, note, hasAccess, noteId]);
 
-  // Auto-save functionality
-  const saveNote = async (newTitle: string, newContent: string) => {
-    if (!note || !user) return;
-
-    setSaving(true);
-    try {
-      await updateDoc(doc(db, 'notes', noteId), {
-        title: newTitle,
-        content: newContent,
-        updatedAt: serverTimestamp()
-      });
-    } catch (error) {
-      console.error('Error saving note:', error);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const debouncedSave = (newTitle: string, newContent: string) => {
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-    }
-    
-    saveTimeoutRef.current = setTimeout(() => {
-      saveNote(newTitle, newContent);
-    }, 1000); // Save after 1 second of inactivity
-  };
-
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newTitle = e.target.value;
     setTitle(newTitle);
-    debouncedSave(newTitle, content);
-  };
-
-  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newContent = e.target.value;
-    setContent(newContent);
-    debouncedSave(title, newContent);
+    const currentContent = ydoc.getText('content').toString();
+    persistNote(newTitle, currentContent);
   };
 
   const handleShare = async () => {
@@ -371,14 +435,11 @@ export default function NotePage() {
 
           {/* Content Editor */}
           <div className="relative">
-            <textarea
-              ref={contentRef}
-              value={content}
-              onChange={handleContentChange}
-              placeholder={isWaitingForCollaborator ? "Waiting for collaborator to join..." : "Start typing to collaborate..."}
-              className="w-full h-96 p-6 text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0 placeholder-gray-400 resize-none"
+            <EditorContent
+              editor={editor}
+              className="prose prose-sm max-w-none p-6 text-gray-900 focus:outline-none h-96 overflow-auto"
             />
-            
+
             {isWaitingForCollaborator && (
               <div className="absolute top-4 right-4 flex items-center space-x-2 text-sm text-gray-500">
                 <div className="animate-pulse w-2 h-2 bg-yellow-500 rounded-full"></div>
@@ -390,13 +451,19 @@ export default function NotePage() {
           {/* Footer */}
           <div className="border-t border-gray-200 p-3 text-xs text-gray-500 flex justify-between items-center">
             <div>
-              {content.length} characters
+              {ydoc.getText('content').toString().length} characters
             </div>
             <div className="flex items-center space-x-4">
               {saving && (
                 <div className="flex items-center space-x-2">
                   <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
                   <span>Saving...</span>
+                </div>
+              )}
+              {offlineSaving && (
+                <div className="flex items-center space-x-2">
+                  <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+                  <span>Saving offline...</span>
                 </div>
               )}
               <div className="flex items-center space-x-2">

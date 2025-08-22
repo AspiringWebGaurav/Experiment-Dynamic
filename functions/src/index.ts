@@ -216,7 +216,14 @@ export const joinByCode = onCall<{ code: string }, JoinByCodeResponse>(async (re
           addedAt: Timestamp.now()
         });
       }
-      
+
+      // Enforce two-member limit on the note
+      const membersRef = db.collection('collabNotes').doc(noteId).collection('members');
+      const membersSnap = await transaction.get(membersRef);
+      if (membersSnap.size >= 2 && !membersSnap.docs.some(doc => doc.id === joinerUid)) {
+        throw new HttpsError('failed-precondition', 'Note already has two collaborators');
+      }
+
       // Add lobby members
       const hostLobbyMemberRef = db.collection('lobbies').doc(lobbyId).collection('members').doc(hostUid);
       const joinerLobbyMemberRef = db.collection('lobbies').doc(lobbyId).collection('members').doc(joinerUid);
@@ -256,3 +263,5 @@ export const joinByCode = onCall<{ code: string }, JoinByCodeResponse>(async (re
     throw new HttpsError('internal', 'Failed to join collaborative session');
   }
 });
+
+export { cleanupPresence } from './cleanupPresence';
