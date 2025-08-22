@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow all authenticated users full access for personal use
+    // This provides complete access to all Firestore operations
+    match /{document=**} {
+      allow read, write, create, update, delete: if request.auth != null;
+    }
+  }
+}
